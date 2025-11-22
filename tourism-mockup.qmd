@@ -1,0 +1,79 @@
+---
+title: "Untitled"
+format: html
+---
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(fpp3)
+library(gt)
+```
+
+## Data imort / preparation
+
+```{r}
+# aggregate into Purpose
+data("tourism")
+data <- tourism |>
+  group_by(Purpose) |>
+  summarise(Trips = sum(Trips, na.rm = TRUE), .groups = "drop")
+
+# create training cutoff and split data
+train_cutoff <- yearquarter("2017 Jan 01")
+```
+
+## Data visualization
+```{r}
+# visualize the data with autoplot and facets by purpose
+data |>
+    autoplot(Trips) +
+    labs(y = "Trips", title = "Tourism data") +
+    facet_wrap(~Purpose, ncol = 1) +
+    theme_minimal()
+
+data_trn <- data |>
+    filter(Quarter < train_cutoff)
+```
+
+  ## Model fitting
+Build multiple models for the Purpose series using Auto ARIMA and ETS
+```{r}
+# fit an ETS model by purpose
+fit <- data_trn |>
+    model(
+        arima = ARIMA(Trips),
+        ets = ETS(Trips)
+    )
+```
+
+## Training accuracy
+```{r}
+fit |>
+    accuracy() |>
+    select(Purpose, .model, RMSE, MAE, MAPE) |>
+    arrange(.model, MAPE) |>
+    gt() |> fmt_number(
+        columns = c(RMSE, MAE, MAPE),
+        decimals = 2
+    )
+```
+
+## Forcast accuracy
+```{r}
+fc <- fit |>
+    forecast(h = "1 year")
+fc |>
+    accuracy(data) |>
+    select(Purpose, .model, RMSE, MAE, MAPE) |>
+    arrange(.model, MAPE) |>
+    gt() |> fmt_number(decimals = 2)
+```
+
+# Forecasts visualization
+```{r}
+trn_start <- yearquarter( train_cutoff |> as.Date() - years(2) )
+fc |>
+    autoplot(data |> filter(Quarter >= trn_start)) +
+    labs(y = "Trips", title = "Tourism data forecasts") +
+    facet_wrap(~Purpose ~ .model, ncol = 2) +
+    theme_minimal()
+```
