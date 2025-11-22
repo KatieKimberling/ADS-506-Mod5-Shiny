@@ -1,5 +1,5 @@
 ---
-title: "Untitled"
+title: "Australian Tourism Forecast"
 format: html
 ---
 
@@ -27,7 +27,7 @@ train_cutoff <- yearquarter("2017 Jan 01")
 data |>
     autoplot(Trips) +
     labs(y = "Trips", title = "Tourism data") +
-    facet_wrap(~Purpose, ncol = 1) +
+    facet_wrap(vars(Purpose), ncol = 1, scales = "free_y") +
     theme_minimal()
 
 data_trn <- data |>
@@ -74,6 +74,6 @@ trn_start <- yearquarter( train_cutoff |> as.Date() - years(2) )
 fc |>
     autoplot(data |> filter(Quarter >= trn_start)) +
     labs(y = "Trips", title = "Tourism data forecasts") +
-    facet_wrap(~Purpose ~ .model, ncol = 2) +
+    facet_grid(Purpose ~ .model, scales = "free_y") +
     theme_minimal()
 ```
