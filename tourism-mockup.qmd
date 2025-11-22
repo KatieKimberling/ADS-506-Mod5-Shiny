@@ -8,7 +8,10 @@ library(fpp3)
 library(gt)
 ```
 
-## Data imort / preparation
+## Tab 1 - Visualize Data
+### Data imort / preparation
+* Inputs - multiselect for Purpose
+* Train date cutoff - default ot 1 yaer prio to the max date
 
 ```{r}
 # aggregate into Purpose
@@ -21,21 +24,29 @@ data <- tourism |>
 train_cutoff <- yearquarter("2017 Jan 01")
 ```
 
-## Data visualization
+### Data visualization
+Give the user the ability to select one or more purposes to visualize in our app
 ```{r}
 # visualize the data with autoplot and facets by purpose
+data_trn <- data |>
+    filter(Quarter < train_cutoff)
+
 data |>
     autoplot(Trips) +
+    geom_vline(xintercept = as.Date(train_cutoff), linetype = "dashed", color = "red", size = 0.6) +
     labs(y = "Trips", title = "Tourism data") +
     facet_wrap(vars(Purpose), ncol = 1, scales = "free_y") +
     theme_minimal()
-
-data_trn <- data |>
-    filter(Quarter < train_cutoff)
 ```
 
-  ## Model fitting
+## Tab 2 - Model Building
+Inputs:
+* Toggle for model specification (default off)
+* Toggle the training accuracy (default off)
+
+### Model fitting
 Build multiple models for the Purpose series using Auto ARIMA and ETS
+This is a second area or tab for our app
 ```{r}
 # fit an ETS model by purpose
 fit <- data_trn |>
@@ -43,9 +54,10 @@ fit <- data_trn |>
         arima = ARIMA(Trips),
         ets = ETS(Trips)
     )
+fit # output the model specification
 ```
 
-## Training accuracy
+### Training accuracy
 ```{r}
 fit |>
     accuracy() |>
@@ -57,7 +69,7 @@ fit |>
     )
 ```
 
-## Forcast accuracy
+### Forcast accuracy
 ```{r}
 fc <- fit |>
     forecast(h = "1 year")
@@ -68,12 +80,18 @@ fc |>
     gt() |> fmt_number(decimals = 2)
 ```
 
-# Forecasts visualization
+### Tab 3
+Iputs:
+* User can select model for forecast table
+
+### Forecasts visualization
+The third tab in our Shiny app - outputting visualizations of the forecasts
 ```{r}
 trn_start <- yearquarter( train_cutoff |> as.Date() - years(2) )
 fc |>
     autoplot(data |> filter(Quarter >= trn_start)) +
     labs(y = "Trips", title = "Tourism data forecasts") +
     facet_grid(Purpose ~ .model, scales = "free_y") +
+    geom_vline(xintercept = as.Date(train_cutoff), linetype = "dashed", color = "red", size = 0.6) +
     theme_minimal()
 ```
