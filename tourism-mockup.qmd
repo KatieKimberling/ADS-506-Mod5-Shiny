@@ -10,8 +10,11 @@ library(gt)
 
 ## Tab 1 - Visualize Data
 ### Data imort / preparation
-* Inputs - multiselect for Purpose
-* Train date cutoff - default ot 1 yaer prio to the max date
+Inputs
+* Multiselect for Purpose
+* Date range
+* First date is train date cutoff - default to 1 year prio to the max date
+* Second date is the end of the forecast horizon -- default ot last date
 
 ```{r}
 # aggregate into Purpose
