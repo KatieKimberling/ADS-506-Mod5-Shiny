@@ -1,0 +1,181 @@
+---
+title: "ADS 506 — Week 5 Shiny Wine Varietals"
+author: "Katie Kimberling"
+date: today
+format:
+  pdf:
+    toc: false
+    geometry: ["margin=1in"]
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(fpp3)
+library(gt)
+library(readr)
+```
+
+## Tab 1 - Visualize Data
+### Data imort / preparation
+Inputs
+
+* Multiselect for Wine Varietal
+* Date range
+* First date is train date cutoff - default to 1 year prio to the max date
+* Second date is the end of the forecast horizon -- default ot last date
+
+```{r}
+# Read in data and convert to long format with better error handling
+Aus_wine_raw <- read_csv(
+  "AustralianWines.csv",
+  col_types = cols(
+    Month = col_character(),
+    Fortified = col_double(),
+    Red = col_double(),
+    sparkling = col_double(),
+    `Sweet white` = col_double(),
+    `Dry white` = col_double(),
+    Rose = col_double()
+  ),
+  na = c("", "NA", "*")  # Treat * as missing value
+)
+
+wine_data <- Aus_wine_raw |>
+  mutate(Month = yearmonth(my(Month))) |>
+  pivot_longer(
+    cols = -Month,
+    names_to = "Varietal",
+    values_to = "Sales"
+  ) |>
+  as_tsibble(index = Month, key = Varietal)
+
+# Define training cutoff - default to 1 year before max date
+train_end <- max(wine_data$Month) - 12
+
+# Split into training and validation
+training <- wine_data |>
+  filter(Month <= train_end)
+
+validation <- wine_data |>
+  filter(Month > train_end)
+```
+
+### Data visualization
+Give the user the ability to select one or more purposes to visualize in our app
+```{r}
+# visualize the data with autoplot and facets by varietal
+wine_data |>
+    autoplot(Sales) +
+    geom_vline(xintercept = as.Date(train_end), linetype = "dashed", color = "red", linewidth = 0.6) +
+    labs(y = "Sales (kL)", title = "Australian Wine Sales by Varietal") +
+    facet_wrap(vars(Varietal), ncol = 1, scales = "free_y") +
+    theme_minimal()
+```
+
+### Optional: Seasonality / Decomposition view
+```{r}
+# STL decomposition for one varietal as example
+wine_data |>
+  filter(Varietal == "Red") |>
+  model(stl = STL(Sales)) |>
+  components() |>
+  autoplot() +
+  labs(title = "STL Decomposition: Red Wine Sales") +
+  theme_minimal()
+```
+
+## Tab 2 - Model Building
+Inputs:
+* Toggle for model specification (default off)
+* Toggle the training accuracy (default off)
+* Forecast horizon input (default 12 months)
+
+
+### Model fitting
+Build multiple models for each Varietal using TSLM, ETS and ARIMA.
+This is a second area or tab for our app
+```{r}
+# fit TSLM, ETS, and ARIMA models by varietal
+fit <- training |>
+    model(
+        tslm = TSLM(Sales ~ trend() + season()),
+        ets = ETS(Sales),
+        arima = ARIMA(Sales)
+    )
+fit # output the model specification
+```
+
+### Training accuracy
+```{r}
+fit |>
+    accuracy() |>
+    select(Varietal, .model, RMSE, MAE, MAPE) |>
+    arrange(.model, MAPE) |>
+    gt() |>
+    fmt_number(
+        columns = c(RMSE, MAE, MAPE),
+        decimals = 2
+    ) |>
+    tab_header(title = "Training Accuracy by Model and Varietal")
+```
+
+### Forcast accuracy
+```{r}
+# Generate forecasts for validation period (12 months)
+fc <- fit |>
+    forecast(h = 12)
+
+fc |>
+    accuracy(wine_data) |>
+    select(Varietal, .model, RMSE, MAE, MAPE) |>
+    arrange(.model, MAPE) |>
+    gt() |>
+    fmt_number(decimals = 2) |>
+    tab_header(title = "Validation Accuracy by Model and Varietal")
+```
+
+## Tab 3
+Iputs:
+* User can select model for forecast visualization
+* User can select which varietals to display
+
+
+### Forecasts visualization
+The third tab in my Shiny app - outputting visualizations of the forecasts
+```{r}
+# Show last 2 years of training data plus forecasts
+trn_start <- yearmonth(as.Date(train_end) - years(2))
+
+fc |>
+    autoplot(wine_data |> filter(Month >= trn_start), level = c(80, 95)) +
+    labs(y = "Sales (kL)", title = "Wine Sales Forecasts by Varietal and Model") +
+    facet_grid(Varietal ~ .model, scales = "free_y") +
+    geom_vline(xintercept = as.Date(train_end), linetype = "dashed", color = "red", linewidth = 0.6) +
+    theme_minimal()
+```
+## Model Specifications Summary
+* Exract and display model specification in a readable format
+```{r}
+# Extract ETS component forms
+ets_specs <- fit |>
+  filter(.model == "ets") |>
+  mutate(ets_spec = format(ets)) |>
+  select(Varietal, ets_spec)
+
+# Extract ARIMA orders
+arima_specs <- fit |>
+  filter(.model == "arima") |>
+  mutate(arima_spec = format(arima)) |>
+  select(Varietal, arima_spec)
+
+# Display as tables
+ets_specs |>
+  gt() |>
+  tab_header(title = "ETS Model Specifications")
+
+arima_specs |>
+  gt() |>
+  tab_header(title = "ARIMA Model Specifications")
