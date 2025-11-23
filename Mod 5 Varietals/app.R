@@ -1,6 +1,8 @@
 library(shiny)
 library(bslib)
 library(fpp3)
+library(fabletools)   # <- add this
+library(fable)        # <- add this
 library(gt)
 library(readr)
 
@@ -237,15 +239,17 @@ server <- function(input, output, session) {
     result <- tryCatch({
       withProgress(message = "Fitting models...", value = 0, {
         incProgress(0.25, detail = "Preparing specs...")
+        # build named expressions for the selected models
         specs <- list()
-        if ("tslm" %in% sel)     specs$tslm  <- rlang::expr(TSLM(Sales ~ trend() + season()))
-        if ("ets" %in% sel)      specs$ets   <- rlang::expr(ETS(Sales))
-        if ("arima" %in% sel)    specs$arima <- rlang::expr(ARIMA(Sales))
+        if ("tslm" %in% sel)  specs[["tslm"]]  <- rlang::expr(TSLM(Sales ~ trend() + season()))
+        if ("ets" %in% sel)   specs[["ets"]]   <- rlang::expr(ETS(Sales))
+        if ("arima" %in% sel) specs[["arima"]] <- rlang::expr(ARIMA(Sales))
         incProgress(0.3, detail = "Fitting models...")
 
-        # Evaluate model call with only the selected specs
-        training_data() |>
-          model(!!!specs)
+        # Evaluate a programmatic call to model(data, !!!specs)
+        data_to_fit <- training_data()
+        model_call <- rlang::call2(quote(model), data_to_fit, !!!specs)
+        eval(model_call, envir = environment())
       })
     }, error = function(e) {
       showNotification(paste("Model fitting failed:", conditionMessage(e)), type = "error", duration = 10)
