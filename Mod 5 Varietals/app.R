@@ -86,6 +86,12 @@ ui <- page_navbar(
       sidebar = sidebar(
         width = 300,
         actionButton("fit_models", "Fit Models", class = "btn-primary"),
+        checkboxGroupInput(
+          "models_to_run",
+          "Models to run",
+          choices = c("tslm", "ets", "arima"),
+          selected = c("tslm", "ets", "arima")
+        ),
         hr(),
         checkboxInput("show_model_spec", "Show Model Specifications", value = FALSE),
         checkboxInput("show_train_acc", "Show Training Accuracy", value = TRUE),
@@ -98,10 +104,10 @@ ui <- page_navbar(
         )
       ),
       verbatimTextOutput("out_model_spec"),
-      gt_output("out_ets_spec"),
-      gt_output("out_arima_spec"),
-      gt_output("out_train_acc"),
-      gt_output("out_forecast_acc")
+      uiOutput("tbl_ets_spec"),
+      uiOutput("tbl_arima_spec"),
+      uiOutput("tbl_train_acc"),
+      uiOutput("tbl_forecast_acc")
     )
   ),
   
@@ -213,22 +219,55 @@ server <- function(input, output, session) {
       theme_minimal()
   })
   
-  # Tab 2: Fit models
+  # Tab 2: Fit models (dynamic based on input$models_to_run)
   fitted_models <- eventReactive(input$fit_models, {
     req(training_data())
-    
-    withProgress(message = "Fitting models...", value = 0, {
-      incProgress(0.3, detail = "Fitting TSLM...")
-      incProgress(0.3, detail = "Fitting ETS...")
-      incProgress(0.3, detail = "Fitting ARIMA...")
-      
-      training_data() |>
-        model(
-          tslm = TSLM(Sales ~ trend() + season()),
-          ets = ETS(Sales),
-          arima = ARIMA(Sales)
-        )
+    sel <- input$models_to_run
+    if (is.null(sel) || length(sel) == 0) {
+      showNotification("No models selected to fit.", type = "warning")
+      return(NULL)
+    }
+
+    notif_id <- showNotification("Fitting models...", duration = NULL, type = "message")
+    start_time <- Sys.time()
+    on.exit({
+      try(removeNotification(notif_id), silent = TRUE)
+    }, add = TRUE)
+
+    result <- tryCatch({
+      withProgress(message = "Fitting models...", value = 0, {
+        incProgress(0.25, detail = "Preparing specs...")
+        specs <- list()
+        if ("tslm" %in% sel)     specs$tslm  <- rlang::expr(TSLM(Sales ~ trend() + season()))
+        if ("ets" %in% sel)      specs$ets   <- rlang::expr(ETS(Sales))
+        if ("arima" %in% sel)    specs$arima <- rlang::expr(ARIMA(Sales))
+        incProgress(0.3, detail = "Fitting models...")
+
+        # Evaluate model call with only the selected specs
+        training_data() |>
+          model(!!!specs)
+      })
+    }, error = function(e) {
+      showNotification(paste("Model fitting failed:", conditionMessage(e)), type = "error", duration = 10)
+      NULL
     })
+
+    if (!is.null(result)) {
+      end_time <- Sys.time()
+      dur <- round(as.numeric(difftime(end_time, start_time, units = "secs")), 1)
+      showNotification(paste0("Models fitted in ", dur, " s"), type = "message", duration = 5)
+    }
+
+    result
+  })
+
+  # After fitting, update the Forecasts tab model selector to only show fitted models
+  observeEvent(fitted_models(), {
+    fm <- fitted_models()
+    if (is.null(fm)) return()
+    available <- intersect(names(fm), c("tslm", "ets", "arima"))
+    if (length(available) == 0) return()
+    updateSelectInput(session, "selected_model", choices = available, selected = available[1])
   })
   
   # Tab 2: Model specification output (full)
@@ -239,86 +278,144 @@ server <- function(input, output, session) {
     fitted_models()
   })
   
-  # Tab 2: ETS specifications table
-  output$out_ets_spec <- render_gt({
+  # Add forecasts() reactive (before any output that uses it)
+  forecasts <- reactive({
+    req(fitted_models())
+    trn_end <- as.Date(train_cutoff_ym())
+    h <- as.integer(input$forecast_horizon)
+    if (is.na(h) || h < 1) h <- 12L
+
+    # get first future month safely, then sequence by "month"
+    first_future <- seq(from = trn_end, by = "month", length.out = 2)[2]
+    future_dates <- seq(from = first_future, by = "month", length.out = h)
+
+    new_data <- tidyr::crossing(
+      Varietal = unique(wine_data$Varietal),
+      Month = yearmonth(future_dates)
+    ) |>
+      as_tsibble(index = Month, key = Varietal)
+
+    fitted_models() |>
+      forecast(new_data = new_data)
+  })
+
+  # Render the gt tables as static HTML to avoid input bindings
+
+  output$tbl_ets_spec <- renderUI({
     if (input$fit_models == 0) return(NULL)
     req(fitted_models())
     if (!input$show_model_spec) return(NULL)
-    
-    fitted_models() |>
-      filter(.model == "ets") |>
-      mutate(ets_spec = format(ets)) |>
-      select(Varietal, ets_spec) |>
-      as_tibble() |>
-      gt() |>
-      tab_header(title = "ETS Model Specifications") |>
-      cols_label(ets_spec = "ETS Components")
+
+    tryCatch({
+      fm <- fitted_models()
+
+      if (!"ets" %in% names(fm)) {
+        return(htmltools::HTML('<div class="alert alert-warning">No ETS models found.</div>'))
+      }
+
+      tbl <- fm |>
+        select(Varietal, ets) |>
+        as_tibble()
+
+      # format() each model object into a single string
+      tbl$ets_spec <- vapply(tbl$ets, format, FUN.VALUE = character(1))
+      tbl <- tbl |>
+        select(Varietal, ets_spec)
+
+      if (nrow(tbl) == 0L) {
+        return(htmltools::HTML('<div class="alert alert-warning">ETS table is empty.</div>'))
+      }
+
+      htmltools::HTML(
+        knitr::kable(tbl, format = "html", table.attr = 'class="table table-sm"')
+      )
+    }, error = function(e) {
+      msg <- htmltools::htmlEscape(conditionMessage(e))
+      htmltools::HTML(paste0('<div class="alert alert-danger">Error rendering ETS specs: ', msg, '</div>'))
+    })
   })
-  
-  # Tab 2: ARIMA specifications table
-  output$out_arima_spec <- render_gt({
+
+  output$tbl_arima_spec <- renderUI({
     if (input$fit_models == 0) return(NULL)
     req(fitted_models())
     if (!input$show_model_spec) return(NULL)
-    
-    fitted_models() |>
-      filter(.model == "arima") |>
-      mutate(arima_spec = format(arima)) |>
-      select(Varietal, arima_spec) |>
-      as_tibble() |>
-      gt() |>
-      tab_header(title = "ARIMA Model Specifications") |>
-      cols_label(arima_spec = "ARIMA Orders")
+
+    tryCatch({
+      fm <- fitted_models()
+
+      if (!"arima" %in% names(fm)) {
+        return(htmltools::HTML('<div class="alert alert-warning">No ARIMA models found.</div>'))
+      }
+
+      tbl <- fm |>
+        select(Varietal, arima) |>
+        as_tibble()
+
+      tbl$arima_spec <- vapply(tbl$arima, format, FUN.VALUE = character(1))
+      tbl <- tbl |>
+        select(Varietal, arima_spec)
+
+      if (nrow(tbl) == 0L) {
+        return(htmltools::HTML('<div class="alert alert-warning">ARIMA table is empty.</div>'))
+      }
+
+      htmltools::HTML(
+        knitr::kable(tbl, format = "html", table.attr = 'class="table table-sm"')
+      )
+    }, error = function(e) {
+      msg <- htmltools::htmlEscape(conditionMessage(e))
+      htmltools::HTML(paste0('<div class="alert alert-danger">Error rendering ARIMA specs: ', msg, '</div>'))
+    })
   })
-  
-  # Tab 2: Training accuracy table
-  output$out_train_acc <- render_gt({
+
+  output$tbl_train_acc <- renderUI({
     if (input$fit_models == 0) return(NULL)
     req(fitted_models())
     if (!input$show_train_acc) return(NULL)
-    
-    fitted_models() |>
+
+    tbl <- fitted_models() |>
       accuracy() |>
       select(Varietal, .model, RMSE, MAE, MAPE) |>
       arrange(.model, MAPE) |>
-      gt() |>
-      fmt_number(columns = c(RMSE, MAE, MAPE), decimals = 2) |>
-      tab_header(title = "Training Accuracy by Model and Varietal")
+      mutate(across(c(RMSE, MAE, MAPE), ~ round(.x, 2))) |>
+      as_tibble()
+
+    htmltools::HTML(
+      knitr::kable(tbl, format = "html", table.attr = 'class="table table-sm"')
+    )
   })
-  
-  # Tab 2: Generate forecasts
-  forecasts <- reactive({
-    req(fitted_models())
-    req(input$forecast_horizon)
-    
-    fitted_models() |>
-      forecast(h = input$forecast_horizon)
-  })
-  
-  # Tab 2: Forecast accuracy table
-  output$out_forecast_acc <- render_gt({
+
+  output$tbl_forecast_acc <- renderUI({
     if (input$fit_models == 0) return(NULL)
     req(forecasts())
-    
-    forecasts() |>
+
+    tbl <- forecasts() |>
       accuracy(wine_data) |>
       select(Varietal, .model, RMSE, MAE, MAPE) |>
       arrange(.model, MAPE) |>
-      gt() |>
-      fmt_number(columns = c(RMSE, MAE, MAPE), decimals = 2) |>
-      tab_header(title = "Validation Accuracy by Model and Varietal")
+      mutate(across(c(RMSE, MAE, MAPE), ~ round(.x, 2))) |>
+      as_tibble()
+
+    htmltools::HTML(
+      knitr::kable(tbl, format = "html", table.attr = 'class="table table-sm"')
+    )
   })
-  
+
   # Tab 3: Forecast plot
   output$forecast_plot <- renderPlot({
     req(forecasts())
     req(input$selected_model)
     req(input$forecast_varietals)
-    
+
     trn_start <- yearmonth(as.Date(train_cutoff_ym()) - lubridate::years(2))
-    
-    forecasts() |>
-      filter(.model == input$selected_model, Varietal %in% input$forecast_varietals) |>
+
+    fc <- forecasts()
+    # if .model present, filter by it; otherwise assume single-model forecasts
+    if (".model" %in% names(fc)) {
+      fc <- fc |> filter(.model == input$selected_model)
+    }
+
+    fc |>
       autoplot(
         wine_data |> filter(Month >= trn_start),
         level = input$confidence_level
