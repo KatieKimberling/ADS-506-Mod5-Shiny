@@ -1,10 +1,11 @@
 library(shiny)
 library(bslib)
 library(fpp3)
-library(fabletools)   # <- add this
-library(fable)        # <- add this
+library(fabletools)  
+library(fable)        
 library(gt)
 library(readr)
+library(urca)
 
 # Read and prepare data
 Aus_wine_raw <- read_csv(
@@ -256,10 +257,19 @@ server <- function(input, output, session) {
       NULL
     })
 
+    # --- diagnostic: report any NULL model list-elements per-model ---
     if (!is.null(result)) {
-      end_time <- Sys.time()
-      dur <- round(as.numeric(difftime(end_time, start_time, units = "secs")), 1)
-      showNotification(paste0("Models fitted in ", dur, " s"), type = "message", duration = 5)
+      failures <- list()
+      for (m in intersect(c("tslm", "ets", "arima"), names(result))) {
+        is_null <- vapply(result[[m]], function(x) is.null(x) || (length(x) == 0 && is.list(x)), logical(1))
+        if (any(is_null)) failures[[m]] <- result$Varietal[is_null]
+      }
+      if (length(failures)) {
+        msgs <- vapply(names(failures), function(nm) {
+          paste0(nm, " failed for: ", paste(failures[[nm]], collapse = ", "))
+        }, character(1))
+        showNotification(paste(msgs, collapse = " | "), type = "error", duration = 20)
+      }
     }
 
     result
